@@ -171,9 +171,10 @@ pipeline {
                             script: "@kubectl exec deployment/${env.CANDIDATE_DEPLOYMENT} -- wget -q -O - http://127.0.0.1/"
                         )
 
-                        if (!page.contains('Foodie Express')) {
-                            error('Candidate validation failed. Stable traffic has not been switched.')
-                        }
+                        
+			if (!page.contains('THIS_TEXT_DOES_NOT_EXIST_123')) {
+    				error('Candidate validation failed. Stable traffic has not been switched.')
+			}
 
                         if (!page.contains('Margherita Pizza')) {
                             error('Candidate validation failed: Margherita Pizza was not found.')
