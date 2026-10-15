@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -8,13 +9,16 @@ pipeline {
 
     environment {
         PATH = "C:\\Users\\risho\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin;${env.PATH}"
+
         IMAGE = 'rishonalancy/food-ordering-portal'
         SERVICE = 'food-ordering-portal-service'
+
         BLUE_DEPLOYMENT = 'food-ordering-portal-blue'
         GREEN_DEPLOYMENT = 'food-ordering-portal-green'
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 git branch: 'main',
@@ -45,6 +49,7 @@ pipeline {
                         if (!$html.Contains($item)) {
                             throw "Test failed: Missing $item"
                         }
+
                         Write-Host "PASS: Found $item"
                     }
 
@@ -80,8 +85,10 @@ pipeline {
                         @echo off
                         echo %DOCKERHUB_PASS%| docker login -u %DOCKERHUB_USER% --password-stdin
                         if errorlevel 1 exit /b 1
+
                         docker push %IMAGE%:%BUILD_NUMBER%
                         if errorlevel 1 exit /b 1
+
                         docker logout
                     '''
                 }
@@ -96,12 +103,10 @@ pipeline {
                         variable: 'KUBECONFIG'
                     )
                 ]) {
-                    bat 'kubectl apply -f deployment.yaml'
-
                     script {
                         env.ACTIVE_COLOR = bat(
                             returnStdout: true,
-                            script: '@kubectl get service food-ordering-portal-service -o jsonpath={.spec.selector.color}'
+                            script: '@kubectl get service %SERVICE% -o jsonpath={.spec.selector.color}'
                         ).trim().toLowerCase()
 
                         if (env.ACTIVE_COLOR == 'blue') {
@@ -112,8 +117,24 @@ pipeline {
                             error("Unknown active color: ${env.ACTIVE_COLOR}")
                         }
 
-                        echo "Current stable version: ${env.ACTIVE_COLOR}"
-                        echo "New version will be deployed to: ${env.CANDIDATE_COLOR}"
+                        env.CANDIDATE_DEPLOYMENT =
+                            env.CANDIDATE_COLOR == 'blue'
+                                ? env.BLUE_DEPLOYMENT
+                                : env.GREEN_DEPLOYMENT
+
+                        env.PREVIOUS_CANDIDATE_IMAGE = bat(
+                            returnStdout: true,
+                            script: "@kubectl get deployment ${env.CANDIDATE_DEPLOYMENT} -o jsonpath={.spec.template.spec.containers[0].image}"
+                        ).trim()
+
+                        if (!env.PREVIOUS_CANDIDATE_IMAGE) {
+                            error('Could not determine the candidate deployment previous image.')
+                        }
+
+                        echo "Current stable color: ${env.ACTIVE_COLOR}"
+                        echo "Candidate color: ${env.CANDIDATE_COLOR}"
+                        echo "Candidate deployment: ${env.CANDIDATE_DEPLOYMENT}"
+                        echo "Previous candidate image: ${env.PREVIOUS_CANDIDATE_IMAGE}"
                     }
                 }
             }
@@ -128,13 +149,9 @@ pipeline {
                     )
                 ]) {
                     script {
-                        def deployment = env.CANDIDATE_COLOR == 'blue'
-                            ? env.BLUE_DEPLOYMENT
-                            : env.GREEN_DEPLOYMENT
+                        bat "kubectl set image deployment/${env.CANDIDATE_DEPLOYMENT} portal=${env.IMAGE}:${env.BUILD_NUMBER}"
 
-                        bat "kubectl set image deployment/${deployment} portal=${env.IMAGE}:${env.BUILD_NUMBER}"
-
-                        bat "kubectl rollout status deployment/${deployment} --timeout=180s"
+                        bat "kubectl rollout status deployment/${env.CANDIDATE_DEPLOYMENT} --timeout=180s"
                     }
                 }
             }
@@ -149,17 +166,17 @@ pipeline {
                     )
                 ]) {
                     script {
-                        def deployment = env.CANDIDATE_COLOR == 'blue'
-                            ? env.BLUE_DEPLOYMENT
-                            : env.GREEN_DEPLOYMENT
-
                         def page = bat(
                             returnStdout: true,
-                            script: "@kubectl exec deployment/${deployment} -- wget -q -O - http://127.0.0.1/"
+                            script: "@kubectl exec deployment/${env.CANDIDATE_DEPLOYMENT} -- wget -q -O - http://127.0.0.1/"
                         )
 
                         if (!page.contains('Foodie Express')) {
-                            error('Candidate validation failed. Stable traffic remains on the old version.')
+                            error('Candidate validation failed. Stable traffic has not been switched.')
+                        }
+
+                        if (!page.contains('Margherita Pizza')) {
+                            error('Candidate validation failed: Margherita Pizza was not found.')
                         }
 
                         echo 'Candidate validation passed.'
@@ -177,13 +194,14 @@ pipeline {
                     )
                 ]) {
                     script {
-                        bat "kubectl set selector service/${env.SERVICE} app=food-ordering-portal color=${env.CANDIDATE_COLOR}"
+                        bat "kubectl set selector service/${env.SERVICE} app=food-ordering-portal,color=${env.CANDIDATE_COLOR}"
+
+                        echo "Traffic switched to ${env.CANDIDATE_COLOR}."
 
                         bat 'kubectl get service food-ordering-portal-service'
                         bat 'kubectl get deployments'
                         bat 'kubectl get pods -o wide'
 
-                        echo "Traffic switched to ${env.CANDIDATE_COLOR}."
                         echo 'Portal URL: http://localhost:30082'
                     }
                 }
@@ -194,11 +212,70 @@ pipeline {
     post {
         success {
             echo 'CI/CD pipeline completed successfully.'
+            echo 'The candidate passed validation and was promoted.'
         }
+
         failure {
-            echo 'Pipeline failed. Check the stage logs before attempting another deployment.'
-            echo 'The traffic switch occurs only after candidate validation passes.'
+            echo 'Pipeline failed. Starting rollback.'
+
+            script {
+                if (env.ACTIVE_COLOR &&
+                    env.CANDIDATE_COLOR &&
+                    env.CANDIDATE_DEPLOYMENT) {
+
+                    withCredentials([
+                        file(
+                            credentialsId: 'kubernetes-config',
+                            variable: 'KUBECONFIG'
+                        )
+                    ]) {
+
+                        // Restore traffic to the previously stable color.
+                        def trafficStatus = bat(
+                            returnStatus: true,
+                            script: "kubectl set selector service/${env.SERVICE} app=food-ordering-portal,color=${env.ACTIVE_COLOR}"
+                        )
+
+                        if (trafficStatus != 0) {
+                            echo 'WARNING: Could not restore the stable Service selector.'
+                        } else {
+                            echo "Traffic restored to ${env.ACTIVE_COLOR}."
+                        }
+
+                        // Restore the candidate deployment's previous image.
+                        if (env.PREVIOUS_CANDIDATE_IMAGE?.trim()) {
+
+                            def imageStatus = bat(
+                                returnStatus: true,
+                                script: "kubectl set image deployment/${env.CANDIDATE_DEPLOYMENT} portal=${env.PREVIOUS_CANDIDATE_IMAGE}"
+                            )
+
+                            if (imageStatus == 0) {
+                                def rolloutStatus = bat(
+                                    returnStatus: true,
+                                    script: "kubectl rollout status deployment/${env.CANDIDATE_DEPLOYMENT} --timeout=180s"
+                                )
+
+                                if (rolloutStatus == 0) {
+                                    echo 'Candidate image rollback completed.'
+                                } else {
+                                    echo 'WARNING: Candidate rollback rollout did not complete.'
+                                }
+                            } else {
+                                echo 'WARNING: Could not restore the candidate deployment image.'
+                            }
+                        } else {
+                            echo 'No previous candidate image was saved.'
+                        }
+                    }
+                } else {
+                    echo 'Deployment state was not captured. Automatic rollback was skipped.'
+                }
+
+                echo 'Check the console output and Kubernetes status.'
+            }
         }
+
         always {
             echo 'Food Ordering Portal pipeline execution finished.'
         }
