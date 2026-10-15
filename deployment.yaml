@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: food-ordering-portal-blue
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: food-ordering-portal
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: food-ordering-portal
+        color: blue
+    spec:
+      containers:
+        - name: portal
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: food-ordering-portal-green
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: food-ordering-portal
+      color: green
+  template:
+    metadata:
+      labels:
+        app: food-ordering-portal
+        color: green
+    spec:
+      containers:
+        - name: portal
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: food-ordering-portal-service
+spec:
+  type: NodePort
+  selector:
+    app: food-ordering-portal
+    color: blue
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30082
