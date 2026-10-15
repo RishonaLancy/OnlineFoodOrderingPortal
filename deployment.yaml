@@ -4,7 +4,6 @@ metadata:
   name: food-ordering-portal-blue
 spec:
   replicas: 3
-  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: food-ordering-portal
@@ -17,7 +16,7 @@ spec:
     spec:
       containers:
         - name: portal
-          image: nginx:alpine
+          image: rishonalancy/food-ordering-portal:v1
           ports:
             - containerPort: 80
           readinessProbe:
@@ -33,7 +32,6 @@ metadata:
   name: food-ordering-portal-green
 spec:
   replicas: 3
-  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: food-ordering-portal
@@ -46,7 +44,7 @@ spec:
     spec:
       containers:
         - name: portal
-          image: nginx:alpine
+          image: rishonalancy/food-ordering-portal:v1
           ports:
             - containerPort: 80
           readinessProbe:
